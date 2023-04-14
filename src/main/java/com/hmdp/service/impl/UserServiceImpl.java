@@ -3,6 +3,7 @@ package com.hmdp.service.impl;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.bean.copier.CopyOptions;
 import cn.hutool.core.util.RandomUtil;
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
 import com.hmdp.dto.Result;
@@ -11,6 +12,7 @@ import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
+import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -26,8 +28,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 
 import static com.baomidou.mybatisplus.core.toolkit.Wrappers.query;
-import static com.hmdp.utils.RedisConstants.LOGIN_CODE_KEY;
-import static com.hmdp.utils.RedisConstants.LOGIN_USER_TTL;
+import static com.hmdp.utils.RedisConstants.*;
 
 /**
  * <p>
@@ -58,7 +59,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         //session.setAttribute("code",code);
 
         // 4.保存用户信息到redis
-        stringRedisTemplate.opsForValue().setIfAbsent(LOGIN_CODE_KEY+phone,code);
+        stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY+phone,code);
 
         // 5.发送验证码
         log.debug("发送短信验证码成功，验证码：{}", code);
@@ -91,7 +92,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         //session.setAttribute("user",user);
 
         //4.改进：保存用户信息到redis
-        String token = UUID.randomUUID().toString();
+        String token = UUID.randomUUID().toString() ;
         UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
 
         //4.1.转bean为map
@@ -100,13 +101,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
                         .setIgnoreNullValue(true)
                         .setFieldValueEditor((fieldName, fieldValue) -> fieldValue.toString()));
         //5.存到redis hash对象中
-        stringRedisTemplate.opsForHash().putAll(token,userDTOMap);
+        stringRedisTemplate.opsForHash().putAll(LOGIN_USER_KEY+token,userDTOMap);
         //6.设置token过期时间
-        stringRedisTemplate.expire(token,LOGIN_USER_TTL, TimeUnit.MINUTES);
+        stringRedisTemplate.expire(LOGIN_USER_KEY+token,LOGIN_USER_TTL, TimeUnit.MINUTES);
+//login:token:a4359cfa-8ffc-437d-9562-4a5d26e74578
 
 
-
-        return Result.ok(token);
+        return Result.ok(LOGIN_USER_KEY+token);
     }
 
 
@@ -118,6 +119,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
         //添加进数据库
         baseMapper.insert(user);
+        //添加进缓存
+        log.debug("添加进缓存"+ JSONUtil.toJsonStr(user));
+        UserHolder.saveUser(BeanUtil.copyProperties(user,UserDTO.class));
+        log.debug("获得内容"+JSONUtil.toJsonStr(UserHolder.getUser()));
 
         return user;
     }

@@ -21,11 +21,11 @@ public class LoginInterceptor implements HandlerInterceptor {
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
 
 
-
         //3.判断对象是否为空
         if (UserHolder.getUser()==null){
             //返回401状态码
             response.setStatus(401);
+            log.debug("进入login拦截器");
             return false;
         }
 
@@ -35,7 +35,6 @@ public class LoginInterceptor implements HandlerInterceptor {
 //
 //        //4.存在就保存到ThreadLocal，并返回true
 //        UserHolder.saveUser(userDTO);
-
         return true;
     }
 
