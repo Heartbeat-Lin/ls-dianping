@@ -18,6 +18,9 @@ public interface IShopService extends IService<Shop> {
     //缓存查询商品id
     public Result queryById(Long id);
 
+    //互斥锁查询，解决缓存击穿
+    public Shop queryWithMutex(Long id);
+
     //更新方法
     public Result update(Shop shop);
 

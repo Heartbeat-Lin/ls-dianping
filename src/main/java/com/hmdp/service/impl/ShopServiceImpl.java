@@ -14,7 +14,7 @@ import org.springframework.util.StringUtils;
 import javax.annotation.Resource;
 import java.util.concurrent.TimeUnit;
 
-import static com.hmdp.utils.RedisConstants.CACHE_SHOP_KEY;
+import static com.hmdp.utils.RedisConstants.*;
 
 /**
  * <p>
@@ -31,6 +31,8 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+
+    //普通查询，可能会缓存击穿
     @Override
     public Result queryById(Long id) {
 
@@ -58,6 +60,51 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     }
 
     @Override
+    public Shop queryWithMutex(Long id)  {
+
+        String key = CACHE_SHOP_KEY + id;
+
+        //1.先查缓存
+        String jsonStr = stringRedisTemplate.opsForValue().get(key);
+
+        //2.查到就直接返回
+        if (!StringUtils.isEmpty(jsonStr)){
+            return JSONUtil.toBean(jsonStr, Shop.class);
+        }
+
+        //3.没查到就加锁
+        boolean lockGot = tryLock(key);
+        Shop shop = null;
+        //4.得到shop实体
+        try {
+            if (lockGot){
+                shop = baseMapper.selectById(id);
+
+            } else {
+                Thread.sleep(50);
+                shop = queryWithMutex(id);
+            }
+            //5.shop判空
+            if (shop == null){
+                //5.1.缓存空值
+                stringRedisTemplate.opsForValue().set(key,"",CACHE_NULL_TTL,TimeUnit.MINUTES);
+                return null;
+            }
+
+            //6.存入值
+            stringRedisTemplate.opsForValue().set(key,JSONUtil.toJsonStr(shop),CACHE_SHOP_TTL,TimeUnit.MINUTES);
+
+        }catch (Exception e){
+            e.printStackTrace();
+        }finally {
+            //7.释放锁
+            unlock(key);
+        }
+
+        return shop;
+    }
+
+    @Override
     @Transactional
     public Result update(Shop shop) {
 
@@ -72,5 +119,14 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         return Result.ok();
     }
 
+
+    private boolean tryLock(String key){
+
+        return stringRedisTemplate.opsForValue().setIfAbsent(key,"1",10,TimeUnit.SECONDS);
+    }
+
+    private void unlock(String key){
+        stringRedisTemplate.delete(key);
+    }
 
 }
