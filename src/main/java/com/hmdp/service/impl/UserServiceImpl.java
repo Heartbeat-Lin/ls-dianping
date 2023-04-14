@@ -1,20 +1,33 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.bean.copier.CopyOptions;
 import cn.hutool.core.util.RandomUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.BeanUtils;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
 
 import static com.baomidou.mybatisplus.core.toolkit.Wrappers.query;
+import static com.hmdp.utils.RedisConstants.LOGIN_CODE_KEY;
+import static com.hmdp.utils.RedisConstants.LOGIN_USER_TTL;
 
 /**
  * <p>
@@ -28,6 +41,9 @@ import static com.baomidou.mybatisplus.core.toolkit.Wrappers.query;
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
     @Override
     public Result sendCode(String phone, HttpSession session) {
         // 1.校验手机号
@@ -39,7 +55,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         String code = RandomUtil.randomNumbers(6);
 
         // 4.保存验证码到 session
-        session.setAttribute("code",code);
+        //session.setAttribute("code",code);
+
+        // 4.保存用户信息到redis
+        stringRedisTemplate.opsForValue().setIfAbsent(LOGIN_CODE_KEY+phone,code);
+
         // 5.发送验证码
         log.debug("发送短信验证码成功，验证码：{}", code);
         // 返回ok
@@ -48,20 +68,19 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
     @Override
     public Result login(LoginFormDTO loginForm, HttpSession session) {
+
         String phone = loginForm.getPhone();
         //1.校验手机号格式
         if (!RegexUtils.isPhoneInvalid(phone)){
             Result.fail("手机号格式错误");
         }
 
-        //2.校验验证码
-        Object codeObj = session.getAttribute("code");
+        //2.校验验证码,改为redis
+        String code = stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY+phone);
         String loginFormCode = loginForm.getCode();
-        if (codeObj==null || loginFormCode==null || !Objects.equals(loginForm.getCode(),codeObj.toString())){
+        if (code==null || loginFormCode==null || !Objects.equals(loginFormCode,code)){
             return Result.fail("验证码校验失败");
         }
-
-
         //3.查询用户是否存在
         User user = query().eq("phone", phone).one();
         if (null==user){
@@ -69,10 +88,25 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         }
 
         //4.保存用户
-        session.setAttribute("user",user);
+        //session.setAttribute("user",user);
+
+        //4.改进：保存用户信息到redis
+        String token = UUID.randomUUID().toString();
+        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
+
+        //4.1.转bean为map
+        Map<String, Object> userDTOMap = BeanUtil.beanToMap(userDTO, new HashMap<>(),
+                CopyOptions.create()
+                        .setIgnoreNullValue(true)
+                        .setFieldValueEditor((fieldName, fieldValue) -> fieldValue.toString()));
+        //5.存到redis hash对象中
+        stringRedisTemplate.opsForHash().putAll(token,userDTOMap);
+        //6.设置token过期时间
+        stringRedisTemplate.expire(token,LOGIN_USER_TTL, TimeUnit.MINUTES);
 
 
-        return Result.ok("功能未完成");
+
+        return Result.ok(token);
     }
 
 
@@ -81,6 +115,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         User user = new User();
         user.setPhone(phone);
         user.setNickName(RandomUtil.randomString(10));
+
+        //添加进数据库
+        baseMapper.insert(user);
 
         return user;
     }
