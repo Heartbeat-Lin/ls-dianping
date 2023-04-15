@@ -59,7 +59,7 @@ public class RefreshTokenInterceptor implements HandlerInterceptor {
 
     @Override
     public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) throws Exception {
-        log.debug("已经remove");
+        log.debug("已经remove掉了UserHolder中的user");
         UserHolder.removeUser();
     }
 }

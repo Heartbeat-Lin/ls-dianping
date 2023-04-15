@@ -14,10 +14,13 @@ import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.service.IVoucherService;
 import com.hmdp.utils.RedisWorker;
 import com.hmdp.utils.UserHolder;
+import com.hmdp.utils.lock.SimpleRedisLock;
 import lombok.Synchronized;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.logging.log4j.util.Strings;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.context.annotation.EnableAspectJAutoProxy;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import sun.awt.AppContext;
@@ -39,10 +42,11 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
 
     @Resource
     private IVoucherOrderService voucherOrderService;
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
 
     @Override
     public Result saveOrder(Long voucherId) {
-
         //1.查到对象
         SeckillVoucher seckillVoucher = getById(voucherId);
         log.debug("seckillVoucher:"+ JSONUtil.toJsonStr(seckillVoucher));
@@ -62,16 +66,6 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
             return Result.fail("库存不足");
         }
 
-        //4.增加逻辑：一人一单
-        int count = voucherOrderService.count(Wrappers.<VoucherOrder>lambdaQuery()
-                .eq(VoucherOrder::getVoucherId, seckillVoucher.getVoucherId())
-                .eq(VoucherOrder::getUserId, UserHolder.getUser().getId()));
-        log.debug("voucherId:{},userId:{},count:{}",seckillVoucher.getVoucherId(),UserHolder.getUser().getId(), count);
-        if (count>0){
-            log.debug("没有下单成功");
-            return Result.fail("该用户已经下过单");
-        }
-
         //抽象下面的逻辑到函数中，方便加锁
 
         /**
@@ -80,10 +74,34 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
          * 2.在非Transactional方法中调用Transactional方法可能会引起其失效，因为实际调用的是this，需要拿到其代理对象再执行
          *  todo：这种方式在集群环境下仍会出现问题，因为多台服务器会有多个jvm，需要引入分布式锁
          */
-        synchronized (UserHolder.getUser().getId().toString().intern()){
+//        synchronized (UserHolder.getUser().getId().toString().intern()){
+//            //获取代理对象（事务）
+//            SeckillVoucherServiceImpl proxy = (SeckillVoucherServiceImpl) AopContext.currentProxy();
+//            return proxy.createVoucherOrder(seckillVoucher);
+//        }
+
+        /**
+         * 改为分布式锁方案
+         */
+        SimpleRedisLock simpleRedisLock = new SimpleRedisLock(stringRedisTemplate);
+        boolean locked = simpleRedisLock.tryLock(Thread.currentThread().getName()+"",30);
+        //
+        while (!locked){
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            locked = simpleRedisLock.tryLock(Thread.currentThread().getName()+"",30);
+        }
+
+        try{
             //获取代理对象（事务）
-            SeckillVoucherServiceImpl proxy = (SeckillVoucherServiceImpl) AopContext.currentProxy();
+            Object o = AopContext.currentProxy();
+            SeckillVoucherServiceImpl proxy = (SeckillVoucherServiceImpl)o;
             return proxy.createVoucherOrder(seckillVoucher);
+        }finally {
+            simpleRedisLock.unlock(Thread.currentThread().getName()+"");
         }
 
 
@@ -100,8 +118,6 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
             log.debug("没有下单成功");
             return Result.fail("该用户已经下过单");
         }
-
-
         //5.更新库存
         SeckillVoucher resVO = seckillVoucher.setStock(seckillVoucher.getStock() - 1);
         //5.1.优化sql，避免超卖
