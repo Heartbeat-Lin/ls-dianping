@@ -16,4 +16,7 @@ public interface ISeckillVoucherService extends IService<SeckillVoucher> {
 
     //秒杀下订单
     public Result saveOrder(Long voucherId);
+
+    public Result saveOrderLua(Long voucherId);
+
 }

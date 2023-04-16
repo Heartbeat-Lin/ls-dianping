@@ -2,6 +2,7 @@ package com.hmdp.service.impl;
 
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.hmdp.config.RedissonConfig;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.User;
@@ -18,15 +19,21 @@ import com.hmdp.utils.lock.SimpleRedisLock;
 import lombok.Synchronized;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.logging.log4j.util.Strings;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.index.PathBasedRedisIndexDefinition;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import sun.awt.AppContext;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -44,6 +51,10 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
     private IVoucherOrderService voucherOrderService;
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private RedissonClient redissonClient;
+
+    private final static String ORDER_ID_PREFIX = "order";
 
     @Override
     public Result saveOrder(Long voucherId) {
@@ -81,30 +92,71 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
 //        }
 
         /**
-         * 改为分布式锁方案
+         * 改为分布式锁方案：
+         * 1.原生方案
+         * 2.redission方案
          */
-        SimpleRedisLock simpleRedisLock = new SimpleRedisLock(stringRedisTemplate);
-        boolean locked = simpleRedisLock.tryLock(Thread.currentThread().getName()+"",30);
-        //
-        while (!locked){
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-            locked = simpleRedisLock.tryLock(Thread.currentThread().getName()+"",30);
+//        SimpleRedisLock simpleRedisLock = new SimpleRedisLock(stringRedisTemplate);
+//        boolean locked = simpleRedisLock.tryLock(Thread.currentThread().getName()+"",30);
+        //改用redission方案
+        RLock lock = redissonClient.getLock("lock:order:" + UserHolder.getUser().getId());
+        boolean locked = false;
+        try {
+            locked = lock.tryLock(10, 30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
         }
+//        while (!locked){
+//            try {
+//                Thread.sleep(50);
+//            } catch (InterruptedException e) {
+//                e.printStackTrace();
+//            }
+//            locked = simpleRedisLock.tryLock(Thread.currentThread().getName()+"",30);
+//        }
 
+        if (!locked){
+            return Result.fail("加锁失败");
+        }
         try{
             //获取代理对象（事务）
             Object o = AopContext.currentProxy();
             SeckillVoucherServiceImpl proxy = (SeckillVoucherServiceImpl)o;
             return proxy.createVoucherOrder(seckillVoucher);
         }finally {
-            simpleRedisLock.unlock(Thread.currentThread().getName()+"");
+            //simpleRedisLock.unlock(Thread.currentThread().getName()+"");
+            lock.unlock(); // redission解锁
         }
 
 
+    }
+
+    @Override
+    public Result saveOrderLua(Long voucherId) {
+
+
+        //1.获取用户
+        Long userId = UserHolder.getUser().getId();
+        long orderId = RedisWorker.nextId(ORDER_ID_PREFIX);
+
+        //2.执行lua脚本
+        Long executeRes = stringRedisTemplate.execute(
+                new DefaultRedisScript<Long>(
+                        "order.lua",
+                        Long.class),
+                Collections.emptyList(),
+                voucherId + "", userId + "", orderId + ""
+        );
+
+        int res = executeRes.intValue();
+
+        //3.判断返回结果
+        if (res!=0){
+            return Result.fail(res==1? "库存不足":"不能重复下单");
+        }
+
+        //todo：4.消息队列异步下单
+        return Result.ok(orderId);
     }
 
     @Transactional
@@ -131,7 +183,7 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
         //6.创建订单
         VoucherOrder voucherOrder = new VoucherOrder();
         //6.1.设置订单id
-        voucherOrder.setId(RedisWorker.nextId("order"));
+        voucherOrder.setId(RedisWorker.nextId(ORDER_ID_PREFIX));
 
         //6.2.设置用户id
         voucherOrder.setUserId(UserHolder.getUser().getId());
@@ -144,6 +196,8 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
         log.debug("voucherOrder:{}",JSONUtil.toJsonStr(voucherOrder));
         return Result.ok(voucherOrder.getId());
     }
+
+
 
 
 
