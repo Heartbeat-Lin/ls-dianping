@@ -14,7 +14,6 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -25,7 +24,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import java.util.function.BiFunction;
 
 import static com.baomidou.mybatisplus.core.toolkit.Wrappers.query;
 import static com.hmdp.utils.RedisConstants.*;
@@ -108,6 +106,15 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
 
         return Result.ok(LOGIN_USER_KEY+token);
+    }
+
+    @Override
+    public void logout(String authStr) {
+
+        UserHolder.removeUser();
+        //删除redis缓存
+        stringRedisTemplate.delete(authStr);
+        log.debug("logout方法执行");
     }
 
 

@@ -55,7 +55,6 @@ public class Blog implements Serializable {
      */
     @TableField(exist = false)
     private Boolean isLike;
-
     /**
      * 标题
      */

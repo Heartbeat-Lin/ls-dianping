@@ -23,4 +23,8 @@ public interface IUserService extends IService<User> {
     //登录功能
     public Result login(LoginFormDTO loginForm, HttpSession session);
 
+    //登出功能
+    public void logout(String authStr);
+
+
 }
