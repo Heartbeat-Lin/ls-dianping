@@ -22,4 +22,10 @@ public interface IBlogService extends IService<Blog> {
     //查询喜欢列表
     public Result queryBlogLikes(Long blogId);
 
+    //保存blog
+    Result saveBlog(Blog blog);
+
+    //查询blog
+    public Result queryBlogOfFollow(Long maxTime,Integer offset);
+
 }

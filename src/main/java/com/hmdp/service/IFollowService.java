@@ -20,6 +20,7 @@ public interface IFollowService extends IService<Follow> {
     //关注/取消关注
     public Result followOrNot(Long userId, Boolean isFollow);
 
+    //获取共同关注
     Result getCommonFollow(Long userId);
 
 }
