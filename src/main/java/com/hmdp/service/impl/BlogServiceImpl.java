@@ -26,6 +26,8 @@ import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -138,20 +140,8 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         //2.保存blog
         save(blog);
 
-        //3.查出粉丝:FollowList
-        List<Follow> followList = followService.list(Wrappers.<Follow>lambdaQuery()
-                .eq(Follow::getFollowUserId, user.getId().toString()));
-        if (null==followList || followList.isEmpty())return Result.ok(blog.getId());
-
-        //4.将followList转换成userIdList
-        List<Long> userList = followList.stream().map(Follow::getUserId).collect(Collectors.toList());
-
-
-        //5.保存到redis中，发到关注用户的邮箱
-        for (Long userId : userList) {
-            String key = RedisConstants.FEED_KEY + userId.toString();
-            stringRedisTemplate.opsForZSet().add(key,user.getId().toString(),System.currentTimeMillis());
-        }
+        boolean flag = refreshFeed(user);
+        if (!flag)return Result.ok();
         log.debug("进入了saveBlog保存逻辑");
         return Result.ok(blog.getId());
     }
@@ -169,7 +159,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         Long curUserId = UserHolder.getUser().getId();
 
         String key = RedisConstants.FEED_KEY + curUserId;
-        log.debug("queryBlogOfFollow,userId:{}",curUserId);
+        //log.debug("queryBlogOfFollow,userId:{}",curUserId);
 
         //2.查询收件箱
         Set<ZSetOperations.TypedTuple<String>> typedTuples =
@@ -181,14 +171,16 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
             return Result.ok();
         }
 
-        //4.查出userIdList
-        List<Long> userIdList =
+        //4.查出blogIdList
+        List<Long> blogIdList =
                 typedTuples.stream().map(ZSetOperations.TypedTuple::getValue).map(Long::valueOf).collect(Collectors.toList());
-        log.debug("userIdList:{}",userIdList);
+        //log.debug("userIdList:{}",blogIdList);
+
+        String sqlStr = StrUtil.join(",", blogIdList);
 
         //5.解析出下一次的offset
         long minTime = 0;//下一次的最小时间
-        Integer os = 1; //本次的偏移量，加上上次的偏移量则为总的偏移量
+        int os = 1; //本次的偏移量，加上上次的偏移量则为总的偏移量
         for (ZSetOperations.TypedTuple<String> tuple : typedTuples) {
             long time = tuple.getScore().longValue();
 
@@ -202,14 +194,10 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
         os = minTime==maxTime ? os:os+offset;
 
-
-        //6.根据id查询Blog
-        String sqlStr = StrUtil.join(",", userIdList);
-        List<Blog> blogs = baseMapper.selectList(Wrappers.<Blog>lambdaQuery()
-                .in(Blog::getUserId, userIdList)
-                .last("order by field(id," + sqlStr + ")"));
-
-        log.debug("BlogService,blogs:{}",blogs);
+        //6.查出blog
+        List<Blog> blogs = list(Wrappers.<Blog>lambdaQuery()
+                .in(Blog::getId, blogIdList)
+                .last("order by field(id,"+sqlStr+")"));
 
 
         //7.填充blogs信息
@@ -246,6 +234,40 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     }
 
+
+    //刷新feed流,传入参数为发博文的博主
+    public boolean refreshFeed(UserDTO user){
+        //3.查出粉丝:FollowList
+        List<Follow> followList = followService.list(Wrappers.<Follow>lambdaQuery()
+                .eq(Follow::getFollowUserId, user.getId().toString()));
+        if (null==followList || followList.isEmpty())return false;
+
+        //4.将followList转换成userIdList
+        List<Long> userList = followList.stream().map(Follow::getUserId).collect(Collectors.toList());
+
+        List<Blog> blogList = list(Wrappers.<Blog>lambdaQuery()
+                .eq(Blog::getUserId, user.getId()));
+        //5.保存到redis中，发到关注用户的邮箱
+        log.debug("blogIdList:{}",blogList.stream().map(Blog::getId).collect(Collectors.toList()));
+        List<Long> timeList =
+                blogList.stream().map(Blog::getCreateTime).map(time -> Timestamp.valueOf(time).getTime()).collect(Collectors.toList());
+        log.debug("timeList:{}",timeList);
+        for (Long userId : userList) {
+            String key = RedisConstants.FEED_KEY + userId.toString();
+            for (Blog blog : blogList) {
+                //5.1.判断是否已经存在了，存在了就不加了
+                if (stringRedisTemplate.opsForZSet().score(key,blog.getId().toString())!=null)continue;
+
+                LocalDateTime createTime = blog.getCreateTime();
+                long time = Timestamp.valueOf(createTime).getTime();
+                //5.2.添加进redis
+                stringRedisTemplate.opsForZSet().add(key,blog.getId().toString(),time);
+
+            }
+            //stringRedisTemplate.opsForZSet().add(key,user.getId().toString(),System.currentTimeMillis());
+        }
+        return true;
+    }
 
 
 

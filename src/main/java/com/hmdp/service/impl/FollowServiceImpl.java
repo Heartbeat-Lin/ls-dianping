@@ -4,9 +4,11 @@ import cn.hutool.core.bean.BeanUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
+import com.hmdp.entity.Blog;
 import com.hmdp.entity.Follow;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.FollowMapper;
+import com.hmdp.service.IBlogService;
 import com.hmdp.service.IFollowService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.service.IUserService;
@@ -40,6 +42,9 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
     @Resource
     private IUserService userService;
 
+    @Resource
+    private IBlogService blogService;
+
     @Override
     public Result isFollow(Long userId) {
         //1.获取当前用户
@@ -68,12 +73,24 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
             follow.setFollowUserId(userId);
             boolean success = save(follow);
             if (!success)return Result.fail("保存失败");
-            stringRedisTemplate.opsForSet().add(setKey,userId.toString());
+            User userToBeFollowed = userService.getOne(Wrappers.<User>lambdaQuery()
+                    .eq(User::getId, userId.toString()));
+            UserDTO userToBeFollowedDto = BeanUtil.copyProperties(userToBeFollowed, UserDTO.class);
+            blogService.refreshFeed(userToBeFollowedDto);
+            //stringRedisTemplate.opsForSet().add(setKey,userId.toString());
         }else {
             boolean remove = remove(Wrappers.<Follow>lambdaQuery()
                     .eq(Follow::getUserId, user.getId())
                     .eq(Follow::getFollowUserId, userId));
             if (!remove)return Result.fail("取消关注失败");
+            //2.1.从当前用户收件箱里删除博主blog
+            List<Blog> blogList = blogService.list(Wrappers.<Blog>lambdaQuery()
+                    .eq(Blog::getUserId, userId));
+
+            for (Blog blog : blogList) {
+                stringRedisTemplate.opsForZSet().remove(user.getId().toString(),blog.getId().toString());
+            }
+            //stringRedisTemplate.opsForZSet().remove(RedisConstants.FEED_KEY + user.getId().toString(),userId.toString());
             stringRedisTemplate.opsForSet().remove(setKey,userId.toString());
         }
         return Result.ok("操作成功");
